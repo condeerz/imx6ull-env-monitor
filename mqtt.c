@@ -133,11 +133,18 @@ int mqtt_thread(void)
     while(1)
     {
        ret = mailbox_recv_msg(&tmpdata);
-        if (ret != 0) {
-            // 接收失败，打印日志并继续循环
-            printf("mailbox_recv_msg failed, ret=%d\n", ret);
+        if (ret == -1) {
+            // 真正的错误：找不到当前线程对应的邮箱任务
+            printf("mqtt:mailbox_recv_msg error, ret=%d\n", ret);
+            usleep(10000); // 延迟10毫秒避免忙等待
+            continue;
+        } else if (ret == 0) {
+            // 队列为空，正常情况，稍作延迟后继续
+            usleep(10000); // 延迟10毫秒
             continue;
         }
+        
+        // ret == 1，成功接收到数据
         mqtt_send("tempval", tmpdata.temp);
         mqtt_send("humval", tmpdata.hum);
         mqtt_send("lightval", tmpdata.light);
