@@ -167,7 +167,7 @@ int mailbox_destroy(void)
     while (ptmpnode != NULL)
     {
         // 销毁该线程关联的消息队列，释放队列占用的内存
-        destroy_linkqueue(ptmptask->Data.queue); // 注意：原代码此处变量名可能有误，应为 ptmpnode
+        destroy_linkqueue(ptmpnode->Data.queue); // 注意：原代码此处变量名可能有误，应为 ptmpnode
         
         // 移动到下一个节点
         ptmpnode = ptmpnode->pNext;
