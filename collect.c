@@ -122,6 +122,7 @@ void *collect_thread(void *arg)
 
         mailbox_send_msg("lvgl_thread", senddata);
         mailbox_send_msg("mqtt_thread", senddata);
+        mailbox_send_msg("sqlite_thread", senddata);
 
         sleep(1);
     }
