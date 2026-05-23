@@ -32,6 +32,9 @@ CSRCS +=$(LVGL_DIR)/sqlite.c
 CSRCS +=$(LVGL_DIR)/mqtt.c
 CSRCS +=$(LVGL_DIR)/collect.c
 CSRCS +=$(LVGL_DIR)/ui_events.c
+
+CSRCS +=$(LVGL_DIR)/log.c
+
 #CSRCS +=$(LVGL_DIR)/images/ui_img_icon1_png.c
 #CSRCS +=$(LVGL_DIR)/images/ui_img_icon2_png.c
 
