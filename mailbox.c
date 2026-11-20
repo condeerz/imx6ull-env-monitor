@@ -48,12 +48,14 @@ int mailbox_add_task(const char *pthreadname, void *(*pthreadfun)(void *arg))
     // 复制线程名称到任务结构中，便于通过名称查找
     strcpy(tmptask.threadname, pthreadname);
 
+    // 先把任务节点插入邮箱链表，再创建线程。
+    // 顺序反过来（先 create 后 insert）会有竞态：新线程可能一上线就调用
+    // mailbox_send_msg，而那时它自己还不在名单里，FindLinkNode 会查不到。
+    InsertTailLinkNode(pmailbox, tmptask);
+
     // 创建新线程
     // 注意：此处创建线程时传入的参数为 NULL，若线程函数需要参数，需修改此接口或结构体以支持参数传递
     pthread_create(&tmptask.tid, NULL, pthreadfun, NULL);
-
-    // 将构建好的任务数据作为新节点，插入到邮箱链表的末尾
-    InsertTailLinkNode(pmailbox, tmptask);
 
     return 0;
 }
@@ -112,17 +114,8 @@ int mailbox_recv_msg(data_t *ptmpdata)
         return -1;
     }
 
-    // 检查当前线程的消息队列是否非空
-    if (!is_empty_linkqueue(ptmptask->Data.queue))
-    {
-        // 如果队列不为空，则从队列头部取出一条消息并存入 ptmpdata
-        quit_linkqueue(ptmptask->Data.queue, ptmpdata);
-        // 成功取到消息，返回1
-        return 1;
-    }
-
-    // 队列为空，没有新消息，返回0
-    return 0;
+    // 原子地完成"判空 + 出队"：不会出现判空之后队列被别人抢空、再解引用空指针的情况
+    return (1 == try_linkqueue(ptmptask->Data.queue, ptmpdata) ? 1 : 0);
 }
 
 /**

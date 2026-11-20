@@ -7,7 +7,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <linux/i2c-dev.h>
 #include <errno.h>
 #include <math.h>
 #include <stdint.h>  // 添加此行以定义uint16_t等类型
@@ -22,135 +21,58 @@ double curhum;
 double curlight;
 double cursmoke;
 
-// BH1750光照传感器相关常量
-#define BH1750_ADDR             0x23    // 默认从地址
-#define BH1750_POWER_DOWN       0x00    // 断电模式
-#define BH1750_POWER_ON         0x01    // 上电模式
-#define BH1750_RESET            0x07    // 复位
-#define BH1750_CONTINUOUS_HRES_MODE  0x10  // 连续高分辨率模式 1 Lux 分辨率
-#define BH1750_CONTINUOUS_HRES_MODE2 0x11  // 连续高分辨率模式2 0.5 Lux 分辨率
-#define BH1750_CONTINUOUS_LRES_MODE  0x13  // 连续低分辨率模式 4 Lux 分辨率
-#define BH1750_ONE_TIME_HRES_MODE    0x20  // 单次高分辨率模式
-#define BH1750_ONE_TIME_HRES_MODE2   0x21  // 单次高分辨率模式2
-#define BH1750_ONE_TIME_LRES_MODE    0x23  // 单次低分辨率模式
+/* ------------------------------------------------------------------
+ * BH1750 光照采集：走内核 I2C 子系统驱动暴露的字符设备 /dev/bh1750_misc
+ *   驱动侧：18-BH1750_i2c/bh1750_drv/bh1750_drv.c
+ *           i2c_driver + of_match_table(rohm,bh1750fvi) + misc_register
+ *   接口约定：驱动 read() 返回 1 个 int，单位毫勒克斯(mLux)，除 1000 得 lux
+ * ------------------------------------------------------------------ */
+#define BH1750_DEV_NODE      "/dev/bh1750_misc"
+#define BH1750_MLUX_PER_LUX  1000
 
 // 全局变量用于控制BH1750线程
 static volatile int bh1750_thread_running = 0;
 
 /**
- * @brief 初始化BH1750传感器
- * @param fd I2C设备文件描述符
- * @return 成功返回0，失败返回-1
- */
-int bh1750_init(int fd) {
-    unsigned char cmd_power_on = BH1750_POWER_ON;
-    unsigned char cmd_reset = BH1750_RESET;
-    unsigned char cmd_mode = BH1750_CONTINUOUS_HRES_MODE;
-
-    // 发送上电命令
-    if (write(fd, &cmd_power_on, 1) != 1) {
-        perror("BH1750: Failed to power on");
-        return -1;
-    }
-    usleep(10000); // 延迟10ms
-
-    // 发送复位命令
-    if (write(fd, &cmd_reset, 1) != 1) {
-        perror("BH1750: Failed to reset");
-        return -1;
-    }
-    usleep(10000); // 延迟10ms
-
-    // 设置测量模式
-    if (write(fd, &cmd_mode, 1) != 1) {
-        perror("BH1750: Failed to set measurement mode");
-        return -1;
-    }
-
-    printf("BH1750 sensor initialized successfully\n");
-    return 0;
-}
-
-/**
- * @brief 读取BH1750传感器的原始数据
- * @param fd I2C设备文件描述符
- * @param lux 存储转换后的光照度值
- * @return 成功返回0，失败返回-1
- */
-int bh1750_read_data(int fd, float *lux) {
-    unsigned char data[2];
-    int ret;
-
-    // 读取2字节数据
-    ret = read(fd, data, 2);
-    if (ret != 2) {
-        perror("BH1750: Failed to read data");
-        return -1;
-    }
-
-    // 将两字节数据转换为光照度值
-    // 计算公式: lux = (high_byte << 8 | low_byte) / 1.2
-    uint16_t raw_value = (data[0] << 8) | data[1];
-    *lux = (float)raw_value / 1.2f;
-
-    return 0;
-}
-
-/**
- * @brief BH1750光照传感器读取线程
+ * @brief BH1750光照传感器读取线程（读内核驱动字符设备）
  * @param arg 参数
  * @return 线程返回值
  */
 void *bh1750thread(void *arg)
 {
     int fd = -1;
-    char *filename = "/dev/i2c-1"; // IMX6ULL通常使用i2c-1
+    int mlux = 0;
     float light_intensity = 0.0f;
-    int init_result;
 
-    // 打开I2C设备
-    fd = open(filename, O_RDWR);
+    fd = open(BH1750_DEV_NODE, O_RDONLY);
     if (fd < 0) {
-        perror("Failed to open I2C device");
-        return (void*)-1;
+        perror("Failed to open " BH1750_DEV_NODE);
+        return (void *)-1;
     }
 
-    // 设置I2C从设备地址
-    if (ioctl(fd, I2C_SLAVE, BH1750_ADDR) < 0) {
-        perror("Failed to set I2C slave address for BH1750");
-        close(fd);
-        return (void*)-1;
-    }
-
-    // 初始化BH1750传感器
-    init_result = bh1750_init(fd);
-    if (init_result != 0) {
-        fprintf(stderr, "Failed to initialize BH1750 sensor\n");
-        close(fd);
-        return (void*)-1;
-    }
-
-    // 设置线程运行标志
     bh1750_thread_running = 1;
 
-    // 主循环：持续读取光照传感器数据
     while (bh1750_thread_running) {
-        if (bh1750_read_data(fd, &light_intensity) == 0) {
-            // 更新全局光照值，使用互斥锁保护
+        int ret = read(fd, &mlux, sizeof(mlux));
+
+        if (ret == (int)sizeof(mlux)) {
+            /* 驱动给的是毫勒克斯，换算成 lux */
+            light_intensity = (float)mlux / BH1750_MLUX_PER_LUX;
+
             pthread_mutex_lock(&lock_light);
             curlight = (double)light_intensity;
             pthread_mutex_unlock(&lock_light);
 
-            printf("BH1750 Light intensity: %.2f lux\n", light_intensity);
+            printf("BH1750 Light intensity: %.2f lux (raw %d mLux)\n",
+                   light_intensity, mlux);
         } else {
-            fprintf(stderr, "Error reading data from BH1750 sensor\n");
+            fprintf(stderr, "Error reading %s: ret=%d\n",
+                    BH1750_DEV_NODE, ret);
         }
 
-        // 延迟3秒后继续下一次读取
         sleep(3);
     }
 
-    // 关闭I2C设备
     close(fd);
     printf("BH1750 thread terminated\n");
 

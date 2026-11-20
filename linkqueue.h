@@ -1,6 +1,9 @@
 #ifndef __LINKQUEUE_H__
 #define __LINKQUEUE_H__
 
+/* pthread 类型必须放在结构体定义之前，否则 pthread_mutex_t 会被当成未知类型 */
+#include <pthread.h>
+
 /**
  * @brief 队列中存储的数据类型
  * 
@@ -31,6 +34,9 @@ typedef struct node {
 typedef struct linkqueue {
     node_t *phead;            ///< 指向链表的头节点（哨兵节点，不存储实际数据）
     node_t *ptail;            ///< 指向链表的最后一个节点（队尾）
+    pthread_mutex_t lock;     ///< 保护本条队列：每条队列一把锁，不是全局一把
+    pthread_cond_t  cond;     ///< 队列有数据时唤醒消费者
+    int             closed;   ///< 置 1 后放行所有等待者，消费者可退出
 }linkqueue_t;
 
 // 注意：这里包含了重复的#include语句，这可能是原代码的一个小错误
@@ -38,6 +44,7 @@ typedef struct linkqueue {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 /**
  * @brief 创建一个空的链式队列
@@ -69,10 +76,32 @@ extern int enter_linkqueue(linkqueue_t *ptmpqueue, data_t tmpdata);
 extern int quit_linkqueue(linkqueue_t *ptmpqueue, data_t *ptmpdata);
 
 /**
+ * @brief 非阻塞出队：原子地"判空 + 出队"，不会再出现判空后队列被抢空
+ * @param ptmpqueue 队列指针
+ * @param ptmpdata 用于接收出队数据的指针
+ * @return 取到数据返回1，队列为空返回0
+ */
+extern int try_linkqueue(linkqueue_t *ptmpqueue, data_t *ptmpdata);
+
+/**
+ * @brief 阻塞出队：队列为空时睡眠等待，直到有数据或队列被关闭
+ * @param ptmpqueue 队列指针
+ * @param ptmpdata 用于接收出队数据的指针
+ * @return 取到数据返回1，队列已关闭且为空返回0
+ */
+extern int wait_linkqueue(linkqueue_t *ptmpqueue, data_t *ptmpdata);
+
+/**
+ * @brief 关闭队列并唤醒所有等待者，用于让消费者线程退出
+ * @param ptmpqueue 队列指针
+ */
+extern void close_linkqueue(linkqueue_t *ptmpqueue);
+
+/**
  * @brief 销毁链式队列，释放所有内存
- * @param pptmpqueue 指向队列指针的指针
+ * @param ptmpqueue 队列指针
  * @return 成功返回0
  */
-extern int destroy_linkqueue(linkqueue_t **pptmpqueue);
+extern int destroy_linkqueue(linkqueue_t *ptmpqueue);
 
 #endif
